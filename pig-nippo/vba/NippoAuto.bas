@@ -29,28 +29,46 @@ Private Const RATE_THRESHOLD As Double = 8#  ' 事故率の警告閾値(%)
 
 ' --- 翌日シートを作成 -------------------------------------------
 Public Sub 日報_翌日シート作成()
+    Dim phase As String
     On Error GoTo eh
+
+    phase = "最新シート検出"
     Dim src As Worksheet
     Set src = NewestSheet()
     If src Is Nothing Then MsgBox "日付シートが見つかりません。", vbExclamation: Exit Sub
 
     Dim d As Date
-    TryParseDate src.Name, d
+    If Not TryParseDate(src.Name, d) Then MsgBox "最新シートの日付を解釈できません: " & src.Name, vbExclamation: Exit Sub
     Dim nd As Date: nd = d + 1
     Dim nm As String: nm = DateToName(nd)
     If SheetExists(nm) Then MsgBox "シート " & nm & " は既に存在します。", vbExclamation: Exit Sub
 
-    ' Excel標準のシートコピー（結合セル・コメント・印刷設定・書式を完全保持）
-    src.Copy Before:=ThisWorkbook.Sheets(1)
-    Dim ns As Worksheet: Set ns = ThisWorkbook.Sheets(1)
-    ns.Name = nm
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
 
+    ' Excel標準のシートコピー（結合セル・コメント・印刷設定・書式を完全保持）
+    ' コピー直後は新しいシートがアクティブになる→それを確実に掴む
+    phase = "シート複製"
+    src.Copy After:=src
+    Dim ns As Worksheet
+    Set ns = ActiveSheet
+    If ns Is src Or ns.Name = src.Name Then    ' 保険：万一アクティブが取れない場合
+        Set ns = ThisWorkbook.Sheets(src.Index + 1)
+    End If
+
+    phase = "シート名変更(" & nm & ")"
+    ns.Name = nm
+    phase = "先頭へ移動"
+    ns.Move Before:=ThisWorkbook.Sheets(1)
+
+    phase = "日付・本日欄の設定"
     ns.Range("A1").Value = nd      ' 日付
     ns.Range("C20").Value = 0      ' 本日 出荷
     ns.Range("C23").Value = 0      ' 本日 死亡
     ns.Range("C27").Value = 0      ' 本日 導入
 
     Dim msg As String: msg = "シート " & nm & " を作成しました（元: " & src.Name & "）"
+    phase = "週/月累計リセット"
     If Weekday(nd, vbMonday) = 1 Then           ' 月曜 → 週累計リセット
         ns.Range("E20").Formula = "=0"
         ns.Range("E23").Formula = "=0"
@@ -63,10 +81,18 @@ Public Sub 日報_翌日シート作成()
         ns.Range("G27").Formula = "=0"
         msg = msg & vbCrLf & "・月累計(G列)をリセットしました（月初）"
     End If
+
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
     MsgBox msg, vbInformation
     Exit Sub
 eh:
-    MsgBox "エラー: " & Err.Description, vbExclamation
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    MsgBox "翌日シート作成でエラーが発生しました。" & vbCrLf & _
+           "ステップ: " & phase & vbCrLf & _
+           "エラー番号: " & Err.Number & vbCrLf & _
+           "内容: " & Err.Description, vbExclamation
 End Sub
 
 ' --- 本日の死亡/出荷/移動を入力 ---------------------------------
@@ -243,6 +269,11 @@ End Sub
 ' --- 操作ボタンを現在のシートに設置 -----------------------------
 Public Sub 日報_ボタン設置()
     Dim ws As Worksheet: Set ws = ActiveSheet
+    ' 既存の日報ボタンを削除（重複設置・重複コピー対策）
+    Dim b As Button
+    For Each b In ws.Buttons
+        If Left(b.OnAction, 3) = "日報_" Or InStr(b.OnAction, "!日報_") > 0 Then b.Delete
+    Next
     AddBtn ws, 0, "翌日シート作成", "日報_翌日シート作成"
     AddBtn ws, 1, "本日入力", "日報_本日入力"
     AddBtn ws, 2, "月次集計", "日報_月次集計"
