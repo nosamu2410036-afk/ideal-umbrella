@@ -129,19 +129,60 @@ function monthlyReport() {
 
   var rep = ss.getSheetByName('月次集計') || ss.insertSheet('月次集計');
   rep.clear();
-  var rows = [['月', '基準シート', '死亡', '出荷', '導入', '事故率%']];
+  rep.getRange(1, 1, rep.getMaxRows(), 14).breakApart();   // 前回の見出し結合を解除
+
+  // 2段見出し：中豚舎 / 肉豚舎 / 累計 をそれぞれ 導入・死亡・出荷・事故率
+  var rows = [];
+  rows.push(['月', '基準シート', '中豚舎', '', '', '', '肉豚舎', '', '', '', '累計(中+肉)', '', '', '']);
+  rows.push(['', '', '導入', '死亡', '出荷', '事故率%', '導入', '死亡', '出荷', '事故率%', '導入', '死亡', '出荷', '事故率%']);
   keys.forEach(function (k) {
     var sh = ss.getSheetByName(latest[k].name);
-    var deaths = num_(sh.getRange('G23').getValue());
-    var ships = num_(sh.getRange('G20').getValue());
-    var intro = num_(sh.getRange('G27').getValue());
-    var rate = intro > 0 ? deaths / intro * 100 : 0;
-    rows.push([k, sh.getName(), deaths, ships, intro, Math.round(rate * 100) / 100]);
+    var n = houseFigures_(sh, '中');
+    var m = houseFigures_(sh, '肉');
+    var row = [k, sh.getName()];
+    pushSet_(row, n.intro, n.death, n.ship);
+    pushSet_(row, m.intro, m.death, m.ship);
+    pushSet_(row, n.intro + m.intro, n.death + m.death, n.ship + m.ship);
+    rows.push(row);
   });
-  rep.getRange(1, 1, rows.length, 6).setValues(rows);
-  rep.autoResizeColumns(1, 6);
+  rep.getRange(1, 1, rows.length, 14).setValues(rows);
+  rep.getRange('A1:A2').merge();
+  rep.getRange('B1:B2').merge();
+  rep.getRange('C1:F1').merge();
+  rep.getRange('G1:J1').merge();
+  rep.getRange('K1:N1').merge();
+  rep.getRange(1, 1, 2, 14).setFontWeight('bold').setHorizontalAlignment('center');
+  rep.autoResizeColumns(1, 14);
   ss.setActiveSheet(rep);
-  ui.alert('月次集計を更新しました（' + keys.length + ' か月）。');
+  ui.alert('月次集計（中豚/肉豚/累計）を更新しました（' + keys.length + ' か月）。');
+}
+
+/** 各群(中/肉)の導入からの累計：導入頭数・死亡・出荷を8房合計で返す */
+function houseFigures_(sh, house) {
+  var block = sh.getRange(105, 1, 15, 20).getValues();    // 行105-119, 列A-T
+  var fblock = sh.getRange(105, 1, 15, 20).getFormulas();
+  var headIdx = (house === '中') ? 2 : 13;   // C / N
+  var deathIdx = (house === '中') ? 4 : 15;  // E / P
+  var shipIdx = (house === '中') ? 8 : 19;   // I / T
+  var intro = 0, death = 0, ship = 0;
+  for (var pen = 1; pen <= 8; pen++) {
+    var rr = (pen - 1) * 2;
+    intro += leadingNum_(fblock[rr][headIdx] || block[rr][headIdx]);  // 頭数式先頭の定数=導入頭数
+    death += num_(block[rr][deathIdx]);
+    ship += num_(block[rr][shipIdx]);
+  }
+  return { intro: intro, death: death, ship: ship };
+}
+
+function leadingNum_(s) {
+  s = String(s);
+  if (s.charAt(0) === '=') s = s.substring(1);
+  var m = s.match(/^\s*(\d+(?:\.\d+)?)/);
+  return m ? parseFloat(m[1]) : 0;
+}
+
+function pushSet_(row, intro, death, ship) {
+  row.push(intro, death, ship, intro > 0 ? Math.round(death / intro * 10000) / 100 : '');
 }
 
 function runCheck() {
