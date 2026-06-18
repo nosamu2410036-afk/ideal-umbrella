@@ -162,74 +162,69 @@ Public Sub 日報_月次集計()
     Dim keys() As String: keys = SortedKeys(dict)
     Dim rep As Worksheet: Set rep = GetOrAddSheet("月次集計")
     rep.Cells.Clear
-    rep.Cells.UnMerge        ' 前回の見出し結合を解除
+    rep.Cells.UnMerge
+    rep.Range("A1:F1").Value = Array("月", "区分", "導入", "死亡", "出荷", "事故率%")
+    rep.Range("A1:F1").Font.Bold = True
 
-    ' 見出し（2段。中豚舎/肉豚舎/累計 をそれぞれ 導入・死亡・出荷・事故率）
-    rep.Range("A1").Value = "月"
-    rep.Range("B1").Value = "基準シート"
-    rep.Range("C1").Value = "中豚舎"
-    rep.Range("G1").Value = "肉豚舎"
-    rep.Range("K1").Value = "累計(中+肉)"
-    Dim sub4 As Variant: sub4 = Array("導入", "死亡", "出荷", "事故率%")
-    Dim cc As Long
-    For cc = 0 To 3
-        rep.Cells(2, 3 + cc).Value = sub4(cc)   ' 中豚舎 C..F
-        rep.Cells(2, 7 + cc).Value = sub4(cc)   ' 肉豚舎 G..J
-        rep.Cells(2, 11 + cc).Value = sub4(cc)  ' 累計   K..N
-    Next
-    rep.Range("A1:A2").Merge: rep.Range("B1:B2").Merge
-    rep.Range("C1:F1").Merge: rep.Range("G1:J1").Merge: rep.Range("K1:N1").Merge
-    rep.Range("A1:N2").HorizontalAlignment = xlCenter
-    rep.Range("A1:N2").Font.Bold = True
-
-    Dim i As Long, r As Long: r = 3
+    Dim i As Long, r As Long: r = 2
     For i = LBound(keys) To UBound(keys)
         Dim sh As Worksheet: Set sh = ThisWorkbook.Worksheets(CStr(dict(keys(i))))
-        Dim ni As Double, nd As Double, ns As Double   ' 中豚舎
-        Dim mi As Double, md As Double, msp As Double   ' 肉豚舎
-        HouseFigures sh, "中", ni, nd, ns
-        HouseFigures sh, "肉", mi, md, msp
-        rep.Cells(r, 1).Value = keys(i)
-        rep.Cells(r, 2).Value = sh.Name
-        WriteSet rep, r, 3, ni, nd, ns
-        WriteSet rep, r, 7, mi, md, msp
-        WriteSet rep, r, 11, ni + mi, nd + md, ns + msp
-        r = r + 1
+        Dim ci As Double, cd As Double, cs As Double   ' 中豚舎 合計
+        Dim mi As Double, md As Double, msp As Double  ' 肉豚舎 合計
+        ci = 0: cd = 0: cs = 0: mi = 0: md = 0: msp = 0
+        Dim pen As Long, iv As Double, dv As Double, sv As Double
+        For pen = 1 To 8
+            PenFigures sh, "中", pen, iv, dv, sv
+            WriteRow rep, r, keys(i), "中豚舎" & pen & "号", iv, dv, sv: r = r + 1
+            ci = ci + iv: cd = cd + dv: cs = cs + sv
+        Next
+        For pen = 1 To 8
+            PenFigures sh, "肉", pen, iv, dv, sv
+            WriteRow rep, r, keys(i), "肉豚舎" & pen & "号", iv, dv, sv: r = r + 1
+            mi = mi + iv: md = md + dv: msp = msp + sv
+        Next
+        ' 9号肉豚舎（残豚）: 受入=J124 / 今月死亡=N124 / 出荷=L124
+        Dim n9i As Double, n9d As Double, n9s As Double
+        n9i = CellNum(sh.Range("J124"))
+        n9d = CellNum(sh.Range("N124"))
+        n9s = CellNum(sh.Range("L124"))
+        WriteRow rep, r, keys(i), "9号残豚", n9i, n9d, n9s: r = r + 1
+        ' 累計：導入は中+肉（9号は二重計上回避）、死亡・出荷は中+肉+9号
+        WriteRow rep, r, keys(i), "累計", ci + mi, cd + md + n9d, cs + msp + n9s: r = r + 1
     Next
     rep.Columns.AutoFit
     rep.Activate
-    MsgBox "月次集計（中豚/肉豚/累計）を更新しました（" & dict.Count & " か月）。", vbInformation
+    MsgBox "月次集計（号別＋9号残豚＋累計）を更新しました（" & dict.Count & " か月）。", vbInformation
     Exit Sub
 eh:
     MsgBox "エラー: " & Err.Description, vbExclamation
 End Sub
 
-' 各群(中/肉)の導入からの累計：導入頭数・死亡・出荷を8房合計で返す
-Private Sub HouseFigures(ByVal ws As Worksheet, ByVal house As String, _
-                         ByRef intro As Double, ByRef death As Double, ByRef ship As Double)
-    intro = 0: death = 0: ship = 0
-    Dim pen As Long, iv As Long
-    For pen = 1 To 8
-        iv = LeadingInt(StripEq(ws.Range(ColFor(house, "head") & PenRow(pen)).Formula))
-        If iv > 0 Then intro = intro + iv          ' 頭数式の先頭定数 = 導入頭数
-        death = death + CellNum(ws.Range(ColFor(house, "death") & PenRow(pen)))
-        ship = ship + CellNum(ws.Range(ColFor(house, "ship") & PenRow(pen)))
-    Next
+' 1房の導入からの累計：導入頭数・死亡・出荷
+Private Sub PenFigures(ByVal ws As Worksheet, ByVal house As String, ByVal pen As Long, _
+                       ByRef intro As Double, ByRef death As Double, ByRef ship As Double)
+    Dim iv As Long
+    iv = LeadingInt(StripEq(ws.Range(ColFor(house, "head") & PenRow(pen)).Formula))
+    intro = IIf(iv > 0, iv, 0)          ' 頭数式の先頭定数 = 導入頭数
+    death = CellNum(ws.Range(ColFor(house, "death") & PenRow(pen)))
+    ship = CellNum(ws.Range(ColFor(house, "ship") & PenRow(pen)))
 End Sub
 
 Private Function StripEq(ByVal f As String) As String
     If Left(f, 1) = "=" Then StripEq = Mid(f, 2) Else StripEq = f
 End Function
 
-Private Sub WriteSet(ByVal rep As Worksheet, ByVal r As Long, ByVal c As Long, _
-                     ByVal intro As Double, ByVal death As Double, ByVal ship As Double)
-    rep.Cells(r, c).Value = intro
-    rep.Cells(r, c + 1).Value = death
-    rep.Cells(r, c + 2).Value = ship
+Private Sub WriteRow(ByVal rep As Worksheet, ByVal r As Long, ByVal monthKey As String, _
+                     ByVal label As String, ByVal intro As Double, ByVal death As Double, ByVal ship As Double)
+    rep.Cells(r, 1).Value = monthKey
+    rep.Cells(r, 2).Value = label
+    rep.Cells(r, 3).Value = intro
+    rep.Cells(r, 4).Value = death
+    rep.Cells(r, 5).Value = ship
     If intro > 0 Then
-        rep.Cells(r, c + 3).Value = Round(death / intro * 100, 2)
+        rep.Cells(r, 6).Value = Round(death / intro * 100, 2)
     Else
-        rep.Cells(r, c + 3).Value = 0
+        rep.Cells(r, 6).Value = 0
     End If
 End Sub
 

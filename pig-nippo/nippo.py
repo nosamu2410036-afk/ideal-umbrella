@@ -574,27 +574,30 @@ def _month_key(d: _dt.date) -> str:
     return "%04d-%02d" % (d.year, d.month)
 
 
-def house_figures(fs: "FormulaSheet", house: str) -> Tuple[float, float, float]:
-    """各群(中/肉)の導入からの累計（導入頭数・死亡・出荷）を 8 房合計で返す。
+def _intro_of(fs: "FormulaSheet", head_ref: str) -> float:
+    """頭数セルの数式先頭の定数（例 ``430-E105-...`` の 430）＝導入頭数。"""
+    f, v = fs.cells.get(head_ref, (None, None))
+    if f is not None:
+        m = re.match(r"\s*(\d+(?:\.\d+)?)", f)
+        return float(m.group(1)) if m else 0.0
+    if v not in (None, ""):
+        try:
+            return float(v)
+        except ValueError:
+            return 0.0
+    return 0.0
 
-    導入頭数は頭数セルの数式先頭の定数（例 ``430-E105-...`` の 430）。
-    死亡・出荷は各房の累計値。
-    """
-    intro = death = ship = 0.0
-    for pen in range(1, 9):
-        f, v = fs.cells.get(pen_cell(house, pen, "head"), (None, None))
-        if f is not None:
-            m = re.match(r"\s*(\d+(?:\.\d+)?)", f)
-            if m:
-                intro += float(m.group(1))
-        elif v not in (None, ""):
-            try:
-                intro += float(v)
-            except ValueError:
-                pass
-        death += fs.eval_ref(pen_cell(house, pen, "death"))
-        ship += fs.eval_ref(pen_cell(house, pen, "ship"))
+
+def pen_figures(fs: "FormulaSheet", house: str, pen: int) -> Tuple[float, float, float]:
+    """1房の導入からの累計（導入頭数・死亡・出荷）。"""
+    intro = _intro_of(fs, pen_cell(house, pen, "head"))
+    death = fs.eval_ref(pen_cell(house, pen, "death"))
+    ship = fs.eval_ref(pen_cell(house, pen, "ship"))
     return intro, death, ship
+
+
+# 9号肉豚舎（残豚）の集計セル
+NINE = {"intro": "J124", "death": "N124", "ship": "L124"}  # 受入 / 今月死亡 / 出荷
 
 
 def cmd_report(args) -> int:
@@ -614,42 +617,44 @@ def cmd_report(args) -> int:
     def rate(death: float, intro: float) -> float:
         return (death / intro * 100) if intro else 0.0
 
-    rows = []
+    # 縦持ち（月・区分・導入・死亡・出荷・事故率）。号別＋9号残豚＋累計。
+    rows: List[Tuple[str, str, float, float, float]] = []
     for key in sorted(latest_per_month):
         _d, name = latest_per_month[key]
         fs = load_sheet_cells(x, name)
-        ni, nd, ns = house_figures(fs, "中")
-        mi, md, ms = house_figures(fs, "肉")
-        rows.append((key, name, (ni, nd, ns), (mi, md, ms), (ni + mi, nd + md, ns + ms)))
+        ci = cd = cs = 0.0   # 中豚舎 合計
+        mi = md = ms = 0.0   # 肉豚舎 合計
+        for pen in range(1, 9):
+            i, dth, sh = pen_figures(fs, "中", pen)
+            rows.append((key, "中豚舎%d号" % pen, i, dth, sh)); ci += i; cd += dth; cs += sh
+        for pen in range(1, 9):
+            i, dth, sh = pen_figures(fs, "肉", pen)
+            rows.append((key, "肉豚舎%d号" % pen, i, dth, sh)); mi += i; md += dth; ms += sh
+        n9i = fs.eval_ref(NINE["intro"])
+        n9d = fs.eval_ref(NINE["death"])
+        n9s = fs.eval_ref(NINE["ship"])
+        rows.append((key, "9号残豚", n9i, n9d, n9s))
+        # 累計：導入は中+肉（9号は二重計上回避）、死亡・出荷は中+肉+9号
+        rows.append((key, "累計", ci + mi, cd + md + n9d, cs + ms + n9s))
 
-    # 表示（中豚舎 / 肉豚舎 / 累計、それぞれ 導入・死亡・出荷・事故率）
-    print("月次集計（各月末シート基準・導入からの累計）")
-    header = "%-9s %-14s | %-22s | %-22s | %-22s" % (
-        "月", "基準シート", "中豚舎(導入/死亡/出荷/率%)",
-        "肉豚舎(導入/死亡/出荷/率%)", "累計(導入/死亡/出荷/率%)")
+    print("月次集計（各月末シート基準・号別／導入からの累計）")
+    header = "%-9s %-12s %7s %6s %6s %8s" % ("月", "区分", "導入", "死亡", "出荷", "事故率%")
     print(header)
     print("-" * len(header))
-
-    def fmt(group: Tuple[float, float, float]) -> str:
-        i, dth, sh = group
-        return "%5d %5d %5d %6.2f" % (i, dth, sh, rate(dth, i))
-
-    for key, name, n, m, t in rows:
-        print("%-9s %-14s | %s | %s | %s" % (key, name, fmt(n), fmt(m), fmt(t)))
+    prev_key = None
+    for key, label, i, dth, sh in rows:
+        if prev_key is not None and key != prev_key:
+            print("")
+        prev_key = key
+        print("%-9s %-12s %7d %6d %6d %8.2f" % (key, label, i, dth, sh, rate(dth, i)))
 
     if args.csv:
         import csv
         with open(args.csv, "w", encoding="utf-8-sig", newline="") as fp:
             w = csv.writer(fp)
-            w.writerow(["月", "基準シート",
-                        "中豚_導入", "中豚_死亡", "中豚_出荷", "中豚_事故率%",
-                        "肉豚_導入", "肉豚_死亡", "肉豚_出荷", "肉豚_事故率%",
-                        "累計_導入", "累計_死亡", "累計_出荷", "累計_事故率%"])
-            for key, name, n, m, t in rows:
-                w.writerow([key, name,
-                            int(n[0]), int(n[1]), int(n[2]), round(rate(n[1], n[0]), 2),
-                            int(m[0]), int(m[1]), int(m[2]), round(rate(m[1], m[0]), 2),
-                            int(t[0]), int(t[1]), int(t[2]), round(rate(t[1], t[0]), 2)])
+            w.writerow(["月", "区分", "導入", "死亡", "出荷", "事故率%"])
+            for key, label, i, dth, sh in rows:
+                w.writerow([key, label, int(i), int(dth), int(sh), round(rate(dth, i), 2)])
         print("\nCSV出力: %s" % args.csv)
     return 0
 

@@ -129,49 +129,61 @@ function monthlyReport() {
 
   var rep = ss.getSheetByName('月次集計') || ss.insertSheet('月次集計');
   rep.clear();
-  rep.getRange(1, 1, rep.getMaxRows(), 14).breakApart();   // 前回の見出し結合を解除
+  rep.getRange(1, 1, rep.getMaxRows(), 6).breakApart();
 
-  // 2段見出し：中豚舎 / 肉豚舎 / 累計 をそれぞれ 導入・死亡・出荷・事故率
-  var rows = [];
-  rows.push(['月', '基準シート', '中豚舎', '', '', '', '肉豚舎', '', '', '', '累計(中+肉)', '', '', '']);
-  rows.push(['', '', '導入', '死亡', '出荷', '事故率%', '導入', '死亡', '出荷', '事故率%', '導入', '死亡', '出荷', '事故率%']);
+  // 縦持ち：月・区分・導入・死亡・出荷・事故率（号別＋9号残豚＋累計）
+  var rows = [['月', '区分', '導入', '死亡', '出荷', '事故率%']];
   keys.forEach(function (k) {
     var sh = ss.getSheetByName(latest[k].name);
-    var n = houseFigures_(sh, '中');
-    var m = houseFigures_(sh, '肉');
-    var row = [k, sh.getName()];
-    pushSet_(row, n.intro, n.death, n.ship);
-    pushSet_(row, m.intro, m.death, m.ship);
-    pushSet_(row, n.intro + m.intro, n.death + m.death, n.ship + m.ship);
-    rows.push(row);
+    var pf = penFiguresAll_(sh);   // {中:[8], 肉:[8]} 各 {intro,death,ship}
+    var ci = 0, cd = 0, cs = 0, mi = 0, md = 0, ms = 0;
+    for (var p = 1; p <= 8; p++) {
+      var n = pf['中'][p - 1];
+      rows.push(reportRow_(k, '中豚舎' + p + '号', n.intro, n.death, n.ship));
+      ci += n.intro; cd += n.death; cs += n.ship;
+    }
+    for (var q = 1; q <= 8; q++) {
+      var m = pf['肉'][q - 1];
+      rows.push(reportRow_(k, '肉豚舎' + q + '号', m.intro, m.death, m.ship));
+      mi += m.intro; md += m.death; ms += m.ship;
+    }
+    // 9号肉豚舎（残豚）: 受入=J124 / 今月死亡=N124 / 出荷=L124
+    var n9i = num_(sh.getRange('J124').getValue());
+    var n9d = num_(sh.getRange('N124').getValue());
+    var n9s = num_(sh.getRange('L124').getValue());
+    rows.push(reportRow_(k, '9号残豚', n9i, n9d, n9s));
+    // 累計：導入は中+肉（9号は二重計上回避）、死亡・出荷は中+肉+9号
+    rows.push(reportRow_(k, '累計', ci + mi, cd + md + n9d, cs + ms + n9s));
   });
-  rep.getRange(1, 1, rows.length, 14).setValues(rows);
-  rep.getRange('A1:A2').merge();
-  rep.getRange('B1:B2').merge();
-  rep.getRange('C1:F1').merge();
-  rep.getRange('G1:J1').merge();
-  rep.getRange('K1:N1').merge();
-  rep.getRange(1, 1, 2, 14).setFontWeight('bold').setHorizontalAlignment('center');
-  rep.autoResizeColumns(1, 14);
+  rep.getRange(1, 1, rows.length, 6).setValues(rows);
+  rep.getRange(1, 1, 1, 6).setFontWeight('bold').setHorizontalAlignment('center');
+  rep.autoResizeColumns(1, 6);
   ss.setActiveSheet(rep);
-  ui.alert('月次集計（中豚/肉豚/累計）を更新しました（' + keys.length + ' か月）。');
+  ui.alert('月次集計（号別＋9号残豚＋累計）を更新しました（' + keys.length + ' か月）。');
 }
 
-/** 各群(中/肉)の導入からの累計：導入頭数・死亡・出荷を8房合計で返す */
-function houseFigures_(sh, house) {
+/** シートの中豚舎/肉豚舎 各8房の導入・死亡・出荷をまとめて返す */
+function penFiguresAll_(sh) {
   var block = sh.getRange(105, 1, 15, 20).getValues();    // 行105-119, 列A-T
   var fblock = sh.getRange(105, 1, 15, 20).getFormulas();
-  var headIdx = (house === '中') ? 2 : 13;   // C / N
-  var deathIdx = (house === '中') ? 4 : 15;  // E / P
-  var shipIdx = (house === '中') ? 8 : 19;   // I / T
-  var intro = 0, death = 0, ship = 0;
-  for (var pen = 1; pen <= 8; pen++) {
-    var rr = (pen - 1) * 2;
-    intro += leadingNum_(fblock[rr][headIdx] || block[rr][headIdx]);  // 頭数式先頭の定数=導入頭数
-    death += num_(block[rr][deathIdx]);
-    ship += num_(block[rr][shipIdx]);
-  }
-  return { intro: intro, death: death, ship: ship };
+  var col = { '中': { head: 2, death: 4, ship: 8 }, '肉': { head: 13, death: 15, ship: 19 } };
+  var out = { '中': [], '肉': [] };
+  ['中', '肉'].forEach(function (house) {
+    var c = col[house];
+    for (var pen = 1; pen <= 8; pen++) {
+      var rr = (pen - 1) * 2;
+      out[house].push({
+        intro: leadingNum_(fblock[rr][c.head] || block[rr][c.head]),  // 頭数式先頭の定数=導入頭数
+        death: num_(block[rr][c.death]),
+        ship: num_(block[rr][c.ship])
+      });
+    }
+  });
+  return out;
+}
+
+function reportRow_(monthKey, label, intro, death, ship) {
+  return [monthKey, label, intro, death, ship, intro > 0 ? Math.round(death / intro * 10000) / 100 : ''];
 }
 
 function leadingNum_(s) {
@@ -179,10 +191,6 @@ function leadingNum_(s) {
   if (s.charAt(0) === '=') s = s.substring(1);
   var m = s.match(/^\s*(\d+(?:\.\d+)?)/);
   return m ? parseFloat(m[1]) : 0;
-}
-
-function pushSet_(row, intro, death, ship) {
-  row.push(intro, death, ship, intro > 0 ? Math.round(death / intro * 10000) / 100 : '');
 }
 
 function runCheck() {
